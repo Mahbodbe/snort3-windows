@@ -1,5 +1,7 @@
 # Snort 3 Windows Integration
 
+[نسخه فارسی](README.fa.md)
+
 Windows build and integration environment for [Snort 3](https://github.com/snort3/snort3) and [LibDAQ](https://github.com/snort3/libdaq).
 
 This repository provides a reproducible Windows integration of Snort 3 and LibDAQ, including the Windows-specific compatibility changes required to build Snort, load DAQ modules, capture live network traffic through Npcap, and execute Snort detection rules.
@@ -419,7 +421,9 @@ snort3-windows/
 │
 ├── .gitmodules
 │
-└── README.md
+├── README.md        # English docs
+├── README.fa.md     # Persian docs
+└── LICENSE          # GPL-2.0 (upstream terms apply)
 ```
 
 The `snort3` and `libdaq` directories are Git submodules.
