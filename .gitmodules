@@ -1,0 +1,8 @@
+[submodule "libdaq"]
+	path = libdaq
+	url = https://github.com/Mahbodbe/libdaq.git
+	branch = windows-support
+[submodule "snort3"]
+	path = snort3
+	url = https://github.com/Mahbodbe/snort3.git
+	branch = windows-support
