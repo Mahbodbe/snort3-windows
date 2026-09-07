@@ -1,49 +1,35 @@
 # Snort 3 Windows Integration
 
-[نسخه فارسی](README.fa.md)
+[Persian documentation](README.fa.md)
 
-Windows build and integration environment for [Snort 3](https://github.com/snort3/snort3) and [LibDAQ](https://github.com/snort3/libdaq).
+A reproducible Windows integration environment for [Snort 3](https://github.com/snort3/snort3) and [LibDAQ](https://github.com/snort3/libdaq), including the Windows-specific compatibility work required to build Snort, load DAQ modules, capture traffic through Npcap, and process live packets.
 
-This repository provides a reproducible Windows integration of Snort 3 and LibDAQ, including the Windows-specific compatibility changes required to build Snort, load DAQ modules, capture live network traffic through Npcap, and execute Snort detection rules.
-
-The repository is designed around two independent upstream changes:
-
-- Snort 3 Windows support
-- LibDAQ Windows dynamic-module loading support
-
-The two changes are intentionally maintained as separate upstream pull requests and can be used independently.
+The repository is intended for Windows-based IDS/IPS research and laboratory environments, including SCADA/ICS cybersecurity testbeds.
 
 ---
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Why This Repository Exists](#why-this-repository-exists)
 - [Architecture](#architecture)
-- [Independent Upstream Components](#independent-upstream-components)
-- [Upstream Pull Requests](#upstream-pull-requests)
-- [Exact Revisions](#exact-revisions)
 - [Test Environment](#test-environment)
-- [Repository Layout](#repository-layout)
-- [How the Integration Works](#how-the-integration-works)
-- [Detailed Windows Changes](#detailed-windows-changes)
-  - [Snort 3](#snort-3)
-  - [LibDAQ](#libdaq)
-- [Why Snort and LibDAQ Changes Are Separate](#why-snort-and-libdaq-changes-are-separate)
-- [Clone and Initialize](#clone-and-initialize)
-- [Build Requirements](#build-requirements)
+- [Upstream Components](#upstream-components)
+- [Exact Revisions](#exact-revisions)
+- [Windows Compatibility Work](#windows-compatibility-work)
+- [LibDAQ Windows Support](#libdaq-windows-support)
+- [Windows Build Environment](#windows-build-environment)
 - [Building LibDAQ](#building-libdaq)
-- [Building the DAQ pcap Module](#building-the-daq-pcap-module)
 - [Building Snort](#building-snort)
-- [Npcap](#npcap)
-- [Running Snort](#running-snort)
-- [Live Capture](#live-capture)
-- [Detection Rule Test](#detection-rule-test)
-- [Validation and Testing](#validation-and-testing)
+- [Npcap Setup](#npcap-setup)
+- [Npcap Loopback Capture](#npcap-loopback-capture)
+- [Snort DLT_NULL Codec](#snort-dlt_null-codec)
+- [Running Snort on Windows](#running-snort-on-windows)
+- [SCADA/DNP3 Loopback Test](#scadadnp3-loopback-test)
 - [Validation Results](#validation-results)
+- [Troubleshooting](#troubleshooting)
 - [Current Limitations](#current-limitations)
 - [Upstream Status](#upstream-status)
-- [AI-Assisted Development and Review](#ai-assisted-development-and-review)
+- [AI-Assisted Development](#ai-assisted-development)
 - [Reproducibility](#reproducibility)
 - [License](#license)
 
@@ -51,140 +37,110 @@ The two changes are intentionally maintained as separate upstream pull requests 
 
 # Overview
 
-Snort 3 is a network intrusion detection and prevention framework designed primarily around Unix-like environments.
+Snort 3 is a network intrusion detection and prevention framework. LibDAQ provides the packet-acquisition abstraction used by Snort. On Unix-like systems, both projects rely on a number of POSIX-specific APIs and conventions that are not directly available on Windows.
 
-LibDAQ is the Data Acquisition library used by Snort to abstract packet acquisition from the underlying capture mechanism.
+This repository provides the Windows-specific compatibility work required to build and run Snort 3 with LibDAQ and Npcap on native Windows, without WSL or a virtual machine.
 
-On Unix-like systems, Snort and LibDAQ rely on a number of POSIX-specific APIs and assumptions, including:
-
-- POSIX dynamic library loading
-- Unix domain sockets
-- Unix-specific filesystem functionality
-- POSIX signal and synchronization APIs
-- Unix-specific networking behavior
-- POSIX error and time APIs
-- Unix-only build targets
-- `.so` dynamic modules
-
-Windows provides different APIs and runtime behavior for several of these mechanisms.
-
-The purpose of this repository is to provide the Windows-specific compatibility work required to make Snort 3 and its DAQ integration operate correctly in a Windows environment.
-
-The integration has been tested on:
+The integration was developed and tested on:
 
 - Windows 10 Enterprise 64-bit
 - MSYS2 UCRT64
+- GCC 16.2.0
+- GNU Make 4.4.1
+- CMake
 - Snort 3.12.2.0
 - LibDAQ 3.0.27
 - Npcap 1.88
 
-The resulting system was validated against live network traffic.
-
-No private network addresses, interface GUIDs, usernames, or machine-specific filesystem paths are required by this documentation.
-
----
-
-# Why This Repository Exists
-
-This repository is not intended to replace the upstream Snort or LibDAQ projects.
-
-Instead, it serves three purposes:
-
-1. Provide a reproducible Windows build and integration environment.
-2. Maintain the Windows-specific changes while upstream review is in progress.
-3. Demonstrate that Snort 3 and LibDAQ can operate together on Windows using Npcap.
-
-The project also separates the two portability problems.
-
-Snort requires Windows compatibility across a relatively large portion of its source tree.
-
-LibDAQ has a much narrower Windows-specific requirement: dynamic DAQ module discovery and loading.
-
-Keeping these changes separate makes both projects easier to review and allows either change to be used independently.
+The final system has been exercised through Snort startup, DAQ loading, Npcap interface access, live packet processing, and a Windows loopback capture path.
 
 ---
 
 # Architecture
 
-The integration consists of three main components:
+The normal Windows capture path is:
 
 ```text
-                    Windows 10
-                        |
-                        |
-                     Npcap
-                        |
-                        v
-                 DAQ pcap module
-                  daq_pcap.dll
-                        |
-                        v
-                     LibDAQ
-                  (DAQ 3.0.27)
-                        |
-                        v
-                     Snort 3
-                  (3.12.2.0)
-                        |
-                        v
-                Detection Engine
-                        |
-                        v
-                    Alerts
+Windows network interface
+        |
+        v
+      Npcap
+        |
+        v
+  daq_pcap.dll
+        |
+        v
+     LibDAQ
+        |
+        v
+     Snort 3
+        |
+        v
+Detection / Inspection
+        |
+        v
+      Alerts
 ```
 
-The responsibilities are separated as follows.
+For local SCADA/ICS applications communicating over `127.0.0.1`, the path is slightly different because Windows loopback traffic is exposed by Npcap using the BSD/Npcap loopback data-link format:
 
-### Npcap
+```text
+SCADA / DNP3 application
+        |
+        | TCP / IPv4
+        v
+  127.0.0.1 loopback
+        |
+        v
+Npcap Loopback Adapter
+        |
+        | DLT_NULL (0)
+        v
+    LibDAQ / pcap
+        |
+        v
+      Snort 3
+        |
+        v
+   DLT_NULL codec
+        |
+        v
+ IPv4 / TCP / application inspection
+```
 
-Npcap provides packet capture capabilities on Windows.
-
-### LibDAQ
-
-LibDAQ provides Snort with an abstraction layer for packet acquisition.
-
-The pcap DAQ module interfaces with Npcap.
-
-### Snort
-
-Snort loads the DAQ module, receives packets, processes them through its inspection and detection engines, and generates alerts.
+This loopback path required an additional Snort codec described below.
 
 ---
 
-# Independent Upstream Components
+# Test Environment
 
-The Snort and LibDAQ changes are intentionally independent.
+| Component | Version / Configuration |
+|---|---|
+| Operating System | Windows 10 Enterprise 64-bit |
+| Build Environment | MSYS2 UCRT64 |
+| Compiler | GCC 16.2.0 |
+| Build Tool | GNU Make 4.4.1 |
+| Build System | CMake |
+| Snort | 3.12.2.0 |
+| LibDAQ | 3.0.27 |
+| Npcap | 1.88 |
+| Architecture | x86_64 |
+
+The documentation intentionally avoids publishing machine-specific usernames, filesystem paths, IP addresses, and interface GUIDs.
+
+---
+
+# Upstream Components
+
+The integration is based on two independent portability changes.
 
 ## Snort 3 Windows Support
 
-The Snort changes provide Windows compatibility throughout the Snort source tree.
-
-They address areas including:
-
-- CMake configuration
-- Windows networking
-- process management
-- threading
-- filesystem handling
-- logging
-- plugin loading
-- platform-specific APIs
-- Unix-only connectors
-- Unix-only transports
-- time handling
-- error handling
-- wildcard matching
-- dynamic modules
-- RPC-related build checks
-- Windows linker requirements
-
-This work is submitted independently to the Snort repository.
+The Snort Windows work addresses platform dependencies throughout the source tree, including build configuration, Windows networking, filesystem handling, time and error APIs, plugin handling, Unix-only connectors and transports, logging, and other POSIX-specific functionality.
 
 ## LibDAQ Windows Support
 
-The LibDAQ changes address dynamic DAQ module loading.
-
-The Windows implementation uses:
+The LibDAQ Windows work focuses on dynamic DAQ module loading and discovery. Windows uses:
 
 ```text
 LoadLibraryA()
@@ -200,658 +156,78 @@ dlsym()
 dlclose()
 ```
 
-The existing POSIX behavior remains available on non-Windows systems.
-
-This work is submitted independently to the LibDAQ repository.
-
----
-
-# Upstream Pull Requests
-
-## Snort 3
-
-**Pull Request #478**
-
-Title:
-
-```text
-Add Windows support for Snort
-```
-
-Repository:
-
-```text
-snort3/snort3
-```
-
-Source branch:
-
-```text
-Mahbodbe:windows-support
-```
-
-Target branch:
-
-```text
-snort3:master
-```
-
-Pull request:
-
-https://github.com/snort3/snort3/pull/478
-
-Current status:
-
-```text
-Open
-Not merged
-```
-
-The pull request contains:
-
-```text
-1 commit
-54 changed files
-1138 additions
-115 deletions
-```
-
-The PR is specifically intended to add Windows platform support while preserving the existing non-Windows code paths.
-
----
-
-## LibDAQ
-
-**Pull Request #43**
-
-Title:
-
-```text
-Add Windows support for LibDAQ
-```
-
-Repository:
-
-```text
-snort3/libdaq
-```
-
-Source branch:
-
-```text
-Mahbodbe:windows-support
-```
-
-Target branch:
-
-```text
-snort3:master
-```
-
-Pull request:
-
-https://github.com/snort3/libdaq/pull/43
-
-Current status:
-
-```text
-Open
-Not merged
-```
-
-The pull request contains:
-
-```text
-1 commit
-1 changed file
-81 additions
-8 deletions
-```
-
-The LibDAQ change is deliberately limited to:
-
-```text
-api/daq_base.c
-```
+The two portability changes are maintained independently so that each can be reviewed and upstreamed separately.
 
 ---
 
 # Exact Revisions
 
-The integration repository pins the exact revisions used during validation.
-
 ## Snort 3
 
-Version:
-
 ```text
-3.12.2.0
+Version: 3.12.2.0
+Windows-support commit: e976668958270f82e45b834e601ae28d868b7c31
+Short form: e976668
+Branch: windows-support
 ```
-
-Windows-support commit:
-
-```text
-e976668958270f82e45b834e601ae28d868b7c31
-```
-
-Short form:
-
-```text
-e976668
-```
-
-Branch:
-
-```text
-windows-support
-```
-
----
 
 ## LibDAQ
 
-Version:
-
 ```text
-3.0.27
+Version: 3.0.27
+Windows-support commit: c97c07e8207898c8292eef0db129788d5335df67
+Short form: c97c07e
+Branch: windows-support
 ```
-
-Windows-support commit:
-
-```text
-c97c07e8207898c8292eef0db129788d5335df67
-```
-
-Short form:
-
-```text
-c97c07e
-```
-
-Branch:
-
-```text
-windows-support
-```
-
-These exact revisions are used by the integration submodules.
 
 ---
 
-# Test Environment
+# Windows Compatibility Work
 
-The integration was tested in the following environment.
+The Snort Windows implementation contains platform-specific changes in several areas.
 
-| Component | Version / Configuration |
-|---|---|
-| Operating System | Windows 10 Enterprise 64-bit |
-| Build Environment | MSYS2 UCRT64 |
-| Compiler | GCC 16.2.0 |
-| Build Tool | GNU Make 4.4.1 |
-| Snort | 3.12.2.0 |
-| LibDAQ | 3.0.27 |
-| Packet Capture | Npcap 1.88 |
-| Architecture | x86_64 |
+## Build and linker support
 
-The validation used a Windows network interface through Npcap.
-
-Machine-specific network addresses and interface identifiers are intentionally omitted from this documentation.
-
----
-
-# Repository Layout
-
-```text
-snort3-windows/
-│
-├── snort3/
-│   └── Snort 3 source at the Windows-support revision
-│
-├── libdaq/
-│   └── LibDAQ source at the Windows-support revision
-│
-├── patches/
-│   └── Additional integration patches, if required
-│
-├── scripts/
-│   └── Build and validation helper scripts
-│
-├── docs/
-│   └── Additional documentation
-│
-├── .gitmodules
-│
-├── README.md        # English docs
-├── README.fa.md     # Persian docs
-└── LICENSE          # GPL-2.0 (upstream terms apply)
-```
-
-The `snort3` and `libdaq` directories are Git submodules.
-
-This allows the integration repository to reference exact fork revisions instead of copying the entire source trees into the integration repository.
-
----
-
-# How the Integration Works
-
-The integration follows this dependency chain:
-
-```text
-Snort
-  |
-  | DAQ API
-  v
-LibDAQ
-  |
-  | pcap DAQ module
-  v
-daq_pcap.dll
-  |
-  | packet capture API
-  v
-Npcap
-  |
-  v
-Windows network interface
-```
-
-Snort itself does not need to know the low-level details of the Windows packet capture implementation.
-
-LibDAQ provides the abstraction.
-
-The DAQ pcap module communicates with Npcap and supplies captured packets to Snort.
-
-This separation is important because the Windows support is not a single monolithic modification.
-
----
-
-# Detailed Windows Changes
-
-# Snort 3
-
-The Snort Windows-support commit modifies multiple platform-dependent areas.
-
-The changes are grouped below by functionality.
-
----
-
-## 1. Windows Build and Linker Support
-
-Several Unix-specific build assumptions are not applicable to Windows.
-
-The Windows build therefore adds platform-specific CMake handling.
-
-For example, Snort links against:
+Windows builds use platform-specific CMake handling and link against:
 
 ```text
 ws2_32
 ```
 
-on Windows.
+for Winsock functionality. Windows symbol/export handling is also configured so that the plugin architecture can operate correctly.
 
-`ws2_32` provides the Windows Winsock networking APIs required by networking-related code.
+## Unix-only components
 
-The Windows executable also requires appropriate symbol/export handling for dynamic modules.
+Components that depend directly on Unix-only functionality are excluded or adapted on Windows. Examples include Unix transports, Unix-domain connectors, Unix socket logging, and other platform-specific modules.
 
-The Windows CMake configuration therefore adds:
+## Time and error APIs
+
+Windows-compatible alternatives are used where required, including:
 
 ```text
---export-all-symbols
+ctime_s()   instead of ctime_r()
+strerror_s() instead of strerror_r()
 ```
 
-to the linker configuration.
+The existing POSIX paths remain available for non-Windows builds.
 
-Unix-only object targets are also excluded from the Windows executable where they are not applicable.
+## Filesystem and wildcard handling
 
-This allows the Windows build to use the same general Snort architecture while avoiding dependencies that only exist on Unix-like systems.
+Windows-specific handling is provided for areas that previously depended on POSIX interfaces such as `fnmatch()` and Unix-specific file flags.
+
+## RPC and other Unix dependencies
+
+Build checks and optional functionality that depend on Unix RPC APIs are disabled or adapted when those APIs are not available on Windows.
+
+The goal is to preserve the existing non-Windows behavior while allowing the core Snort packet-processing path to compile and run natively on Windows.
 
 ---
 
-## 2. Unix-Only Transport Handling
+# LibDAQ Windows Support
 
-Snort contains transport components that depend on Unix-specific functionality.
+LibDAQ provides the abstraction between Snort and packet acquisition.
 
-For example:
-
-```text
-mp_unix_transport
-```
-
-is not appropriate for a native Windows build.
-
-The Windows build therefore excludes this Unix-specific object from the executable.
-
-This avoids forcing Windows builds to provide functionality that only exists on Unix-like systems.
-
----
-
-## 3. Unix Domain Connectors
-
-Unix domain connectors depend on Unix-specific IPC mechanisms.
-
-Windows does not provide the same Unix-domain socket implementation expected by the existing Snort code.
-
-The connector loader therefore avoids loading Unix-specific connector implementations on Windows.
-
-This includes:
-
-```text
-tcp_connector
-unixdomain_connector
-```
-
-where their existing implementations depend on Unix-specific functionality.
-
-The associated platform-specific statistics objects are also handled appropriately for Windows compilation.
-
-The objective is not to remove the connector framework, but to prevent unsupported Unix-specific components from breaking a Windows build.
-
----
-
-## 4. Unix Socket Logger
-
-The `alert_unixsock` logger depends on Unix-domain sockets.
-
-It is therefore excluded from Windows builds.
-
-The CMake configuration conditionally adds this logger only on non-Windows platforms.
-
-This preserves the existing logger on Unix systems while preventing an unsupported dependency from breaking Windows builds.
-
----
-
-## 5. Time API Compatibility
-
-Snort uses:
-
-```text
-ctime_r()
-```
-
-on POSIX systems.
-
-Windows provides:
-
-```text
-ctime_s()
-```
-
-instead.
-
-The Windows code therefore uses:
-
-```c
-ctime_s(time_buf, sizeof(time_buf), &now);
-```
-
-while preserving:
-
-```c
-ctime_r(&now, time_buf);
-```
-
-for non-Windows platforms.
-
-This is a portability adaptation rather than a behavioral redesign.
-
----
-
-## 6. Error String Handling
-
-Some POSIX code uses:
-
-```text
-strerror_r()
-```
-
-while the Microsoft runtime provides:
-
-```text
-strerror_s()
-```
-
-for the corresponding safe error-string operation.
-
-Windows-specific branches therefore use `strerror_s()` where required.
-
-The existing POSIX implementation remains unchanged.
-
-This approach keeps the platform-specific API differences isolated behind conditional compilation.
-
----
-
-## 7. File Access
-
-Some file DAQ functionality used:
-
-```text
-O_NONBLOCK
-```
-
-when opening files.
-
-This behavior is not directly portable to the Windows implementation.
-
-The Windows path therefore uses:
-
-```text
-open(filename, O_RDONLY)
-```
-
-while the POSIX implementation retains:
-
-```text
-open(filename, O_RDONLY | O_NONBLOCK)
-```
-
-This keeps the original behavior for Unix-like systems while allowing the file DAQ component to compile and operate under Windows.
-
----
-
-## 8. Filesystem Wildcard Matching
-
-Snort previously relied on:
-
-```text
-fnmatch.h
-```
-
-for wildcard matching.
-
-That header/API is not generally available in the same form on Windows.
-
-A small internal wildcard implementation was therefore introduced.
-
-The implementation supports the wildcard semantics required by the affected Snort code, including:
-
-```text
-*
-?
-```
-
-The Windows-specific code replaces the dependency on `fnmatch()` with:
-
-```text
-wildcard_match()
-```
-
-This keeps wildcard processing within the Snort source tree and avoids introducing an additional Windows-specific external dependency.
-
----
-
-## 9. Signal-Safe File Synchronization
-
-Some Unix code uses:
-
-```text
-fsync()
-```
-
-to synchronize file descriptors.
-
-The Windows implementation does not provide the same POSIX semantics through the same API.
-
-The Windows path therefore avoids invoking the Unix `fsync()` implementation in the affected signal-safe logger path.
-
-The existing POSIX implementation remains unchanged.
-
----
-
-## 10. RPC Build Check
-
-The Snort build system checks for an RPC program database implementation.
-
-On Unix-like systems this can involve:
-
-```text
-getrpcent()
-```
-
-and potentially:
-
-```text
-TIRPC
-```
-
-Windows does not provide the same RPC program database interface.
-
-The Windows build therefore disables the affected RPC service detector instead of treating the missing Unix RPC functionality as a fatal configuration error.
-
-This allows the remainder of Snort to build successfully on Windows.
-
----
-
-## 11. `ffs()` Compatibility
-
-The code previously used:
-
-```text
-ffs()
-```
-
-for finding the first set bit.
-
-The Windows-compatible implementation uses:
-
-```text
-__builtin_ffs()
-```
-
-which is provided by the GCC toolchain used by the MSYS2 UCRT64 environment.
-
-This avoids depending on a POSIX implementation of `ffs()`.
-
----
-
-## 12. Windows Plugin and Module Handling
-
-Snort relies heavily on dynamically loaded modules.
-
-The Windows build therefore requires appropriate handling of dynamic modules and symbol visibility.
-
-The build configuration was adjusted to support the Windows dynamic-module environment while retaining the existing module architecture.
-
-This is particularly important because the DAQ layer is itself dynamically loaded.
-
----
-
-## 13. Thread-Local Statistics
-
-Some connector modules declare statistics using thread-local storage.
-
-The Windows compiler/toolchain requires the appropriate definitions to exist when the normal Unix implementation is not compiled.
-
-Windows-specific definitions were therefore added for the affected connector statistics.
-
-This allows the modules to compile without requiring the Unix-specific implementation files.
-
----
-
-## 14. Windows Networking
-
-Windows networking uses Winsock.
-
-The Windows build therefore links against:
-
-```text
-ws2_32
-```
-
-This provides the networking symbols required by Snort and its Windows-compatible components.
-
-The platform-specific code is guarded using Windows checks such as:
-
-```c
-#ifdef _WIN32
-```
-
-so the Windows implementation does not replace the Unix implementation.
-
----
-
-## 15. Windows-Specific CMake Source Selection
-
-A recurring pattern throughout the changes is conditional source selection.
-
-Instead of attempting to compile every Unix source file on Windows, CMake selectively excludes components whose underlying platform APIs are unavailable.
-
-Conceptually:
-
-```text
-                    Snort source tree
-                           |
-              +------------+------------+
-              |                         |
-           Windows                   POSIX
-              |                         |
-       Windows-compatible         Existing Unix
-          components                components
-              |                         |
-              +------------+------------+
-                           |
-                    Snort executable
-```
-
-This approach minimizes behavioral changes to the existing non-Windows implementation.
-
----
-
-# LibDAQ
-
-The LibDAQ Windows change is intentionally much smaller.
-
-The primary problem is dynamic module loading.
-
----
-
-## 1. POSIX Dynamic Loading
-
-On Unix-like systems LibDAQ uses:
-
-```c
-dlopen()
-dlsym()
-dlclose()
-dlerror()
-```
-
-These APIs are provided through the traditional POSIX/Linux dynamic-loading model.
-
-Windows does not provide these APIs in the same way.
-
----
-
-## 2. Windows Dynamic Loading
-
-Windows provides dynamic library loading through:
-
-```text
-LoadLibraryA()
-GetProcAddress()
-FreeLibrary()
-```
-
-The LibDAQ Windows implementation introduces an abstraction layer:
+The Windows implementation introduces platform-neutral dynamic-loader wrappers:
 
 ```text
 daq_dlopen()
@@ -860,834 +236,555 @@ daq_dlclose()
 daq_dlerror()
 ```
 
-On Windows these wrappers map to the Windows loader APIs.
+On Windows these map to the Windows loader APIs. On POSIX systems they continue to use the corresponding POSIX APIs.
 
-On non-Windows platforms they map to:
-
-```text
-dlopen()
-dlsym()
-dlclose()
-dlerror()
-```
-
-This creates a common interface for the rest of LibDAQ.
-
----
-
-## 3. Why the Abstraction Is Important
-
-Without this abstraction, the LibDAQ source would need to contain Windows-specific logic at every location where a dynamic module is opened or closed.
-
-Instead, the platform-specific behavior is isolated.
-
-Conceptually:
-
-```text
-                 LibDAQ
-                    |
-             daq_dlopen()
-                    |
-          +---------+---------+
-          |                   |
-       Windows             POSIX
-          |                   |
-   LoadLibraryA()          dlopen()
-```
-
-The same pattern is used for symbol lookup and module unloading.
-
-This reduces platform-specific code throughout the rest of LibDAQ.
-
----
-
-## 4. Dynamic Module Extension
-
-Unix DAQ modules use:
-
-```text
-.so
-```
-
-Windows dynamic modules use:
-
-```text
-.dll
-```
-
-The DAQ module discovery logic therefore uses:
-
-```text
-.dll
-```
-
-on Windows and retains:
-
-```text
-.so
-```
-
-on POSIX systems.
-
-This is required for LibDAQ to discover:
+Windows DAQ modules are discovered as `.dll` files rather than Unix `.so` files. This allows modules such as:
 
 ```text
 daq_pcap.dll
 ```
 
-in the Windows DAQ module directory.
+to be discovered and loaded by LibDAQ.
 
 ---
 
-## 5. Windows Error Reporting
+# Windows Build Environment
 
-When a Windows dynamic-loading operation fails, the implementation records the Windows error code obtained from:
+The build was performed natively on Windows using MSYS2 UCRT64.
 
-```text
-GetLastError()
-```
-
-The error is then exposed through the LibDAQ abstraction.
-
-This provides useful diagnostic information while preserving the existing LibDAQ error-reporting structure.
-
----
-
-## 6. Dynamic Module Lifecycle
-
-The Windows-specific implementation covers the complete dynamic module lifecycle:
-
-```text
-Discover module
-      |
-      v
-daq_dlopen()
-      |
-      v
-LoadLibraryA()
-      |
-      v
-Get module handle
-      |
-      v
-daq_dlsym()
-      |
-      v
-GetProcAddress()
-      |
-      v
-Use DAQ module
-      |
-      v
-daq_dlclose()
-      |
-      v
-FreeLibrary()
-```
-
-This is important because simply compiling `daq_pcap.dll` is not sufficient.
-
-LibDAQ must also be able to discover, load, resolve symbols from, and unload the module correctly.
-
----
-
-# Why Snort and LibDAQ Changes Are Separate
-
-Although Snort and LibDAQ are used together, they solve different portability problems.
-
-Snort's Windows work covers a broad set of platform assumptions throughout the application.
-
-LibDAQ's Windows work is primarily concerned with dynamic module loading and module discovery.
-
-Therefore:
-
-```text
-Snort Windows Support
-        |
-        +---- independent change
-        |
-        v
-Snort application
-```
-
-and:
-
-```text
-LibDAQ Windows Support
-        |
-        +---- independent change
-        |
-        v
-DAQ module loading
-```
-
-The integrated stack combines both:
-
-```text
-Snort Windows Support
-          +
-LibDAQ Windows Support
-          +
-Npcap
-          =
-Working Windows integration
-```
-
-However, neither upstream change conceptually depends on the other being merged into the same commit or pull request.
-
-This separation also makes upstream review easier.
-
----
-
-# Clone and Initialize
-
-Clone the integration repository:
+The required development packages included:
 
 ```bash
-git clone https://github.com/Mahbodbe/snort3-windows.git
-cd snort3-windows
+pacman -S base-devel \
+  mingw-w64-ucrt-x86_64-toolchain \
+  mingw-w64-ucrt-x86_64-cmake \
+  mingw-w64-ucrt-x86_64-pkgconf \
+  git
 ```
 
-Initialize the Git submodules:
-
-```bash
-git submodule update --init --recursive
-```
-
-The repository contains two submodules:
+The toolchain used during validation reported:
 
 ```text
-snort3
-libdaq
+GCC 16.2.0
+GNU Make 4.4.1
 ```
 
-To verify the exact revisions:
-
-```bash
-git submodule status
-```
-
-The expected revisions are:
-
-```text
-e976668  snort3
-c97c07e  libdaq
-```
-
-The submodules point to the Windows-support branches of the corresponding forks.
-
----
-
-# Build Requirements
-
-The tested build environment uses:
-
-- Windows 10 Enterprise 64-bit
-- MSYS2
-- UCRT64 environment
-- GCC
-- GNU Make
-- CMake
-- pkg-config
-- Git
-- Npcap
-
-The MSYS2 UCRT64 environment is important because the build uses a native Windows-oriented toolchain rather than WSL.
+No virtual machine or WSL environment is required for this integration.
 
 ---
 
 # Building LibDAQ
 
-Enter the LibDAQ source directory:
+The LibDAQ source was built using the Windows-support revision.
+
+A typical source build follows this sequence:
 
 ```bash
-cd libdaq
+./bootstrap
+./configure --prefix=/path/to/snort3-windows/install
+make -j$(nproc)
+make install
 ```
 
-Configure LibDAQ using the Windows-compatible configuration.
+The resulting DAQ modules include the pcap module required for Npcap capture.
 
-The following example uses a generic installation prefix:
-
-```bash
-./configure \
-  --prefix=/path/to/snort3-windows/install \
-  --disable-shared \
-  --enable-static \
-  --disable-afpacket-module \
-  --disable-bpf-module \
-  --disable-divert-module \
-  --disable-dump-module \
-  --disable-fst-module \
-  --disable-netmap-module \
-  --disable-nfq-module \
-  --disable-savefile-module \
-  --disable-trace-module \
-  --disable-gwlb-module
-```
-
-Build the LibDAQ API:
-
-```bash
-make -C api
-```
-
-Build the DAQ modules:
-
-```bash
-make -C modules
-```
-
-Install the API:
-
-```bash
-make -C api install
-```
-
-Install the modules:
-
-```bash
-make -C modules install
-```
-
-The installation provides the LibDAQ headers and libraries required by Snort.
-
----
-
-# Building the DAQ pcap Module
-
-The Windows integration requires the pcap DAQ module to be available as a Windows dynamic library.
-
-The resulting module is:
+The tested installation produced DAQ modules including:
 
 ```text
+daq_file.dll
+daq_hext.dll
 daq_pcap.dll
+daq_pcap_msyst2.dll
 ```
 
-The module is built against Npcap's packet capture library.
-
-The required module directory is:
+The installed DAQ directory is supplied to Snort explicitly when required:
 
 ```text
-install/lib/daq/
+--daq-dir <installation-prefix>/lib/snort/daq
 ```
-
-After building the pcap DAQ module, copy it into the DAQ module directory:
-
-```bash
-mkdir -p /path/to/snort3-windows/install/lib/daq
-
-cp modules/pcap/.libs/daq_pcap.dll \
-   /path/to/snort3-windows/install/lib/daq/
-```
-
-The resulting DLL requires the Npcap runtime, including:
-
-```text
-wpcap.dll
-```
-
-as well as the required Windows runtime libraries.
 
 ---
 
 # Building Snort
 
-Enter the Snort source directory:
+The Snort 3 source was built with CMake from the Windows-support source tree.
+
+The final build was performed with:
 
 ```bash
-cd ../snort3
+cmake -S . -B build
+cmake --build build -j4
 ```
 
-Create a build directory:
-
-```bash
-mkdir -p build
-cd build
-```
-
-Configure the project with CMake using the installed LibDAQ:
-
-```bash
-cmake .. \
-  -G "MSYS Makefiles" \
-  -DCMAKE_PREFIX_PATH=/path/to/snort3-windows/install
-```
-
-Build:
-
-```bash
-cmake --build . -j$(nproc)
-```
-
-Install:
-
-```bash
-cmake --install .
-```
-
-After installation, verify the Snort version:
-
-```bash
-snort.exe -V
-```
-
-The expected version is:
+The resulting executable reports:
 
 ```text
-Snort++ 3.12.2.0
+Snort++ Version 3.12.2.0
+Using DAQ version 3.0.27
+Using Npcap version 1.88
 ```
 
-The output should also report:
+The build completed successfully with:
 
 ```text
-DAQ 3.0.27
+[.../...] Linking CXX executable src\\snort.exe
 ```
 
 ---
 
-# Npcap
+# Npcap Setup
 
-Npcap provides the packet capture functionality used by the pcap DAQ module.
+Npcap 1.88 was installed on the Windows host.
 
-The tested environment uses:
-
-```text
-Npcap 1.88
-```
-
-Npcap must be installed on the Windows host before live packet capture can be tested.
-
-Snort accesses Windows network interfaces through Npcap's packet capture interface.
-
-The DAQ layer therefore follows:
+The Npcap driver was verified to be running:
 
 ```text
-Snort
-  |
-LibDAQ
-  |
-daq_pcap.dll
-  |
-Npcap
-  |
-Windows network interface
+SERVICE_NAME: npcap
+STATE: 4 RUNNING
+WIN32_EXIT_CODE: 0
 ```
 
-Machine-specific interface names and identifiers are intentionally omitted from this documentation.
+For ordinary Ethernet capture, Snort can use an Npcap-backed network interface directly.
+
+For the SCADA test environment, however, the relevant communication was initially local loopback traffic, so the Npcap Loopback Adapter was required.
+
+Npcap provides `NPFInstall.exe` for managing the loopback adapter. The loopback adapter was installed with:
+
+```cmd
+"C:\Program Files\Npcap\NPFInstall.exe" -il
+```
+
+Successful installation returned:
+
+```text
+Npcap Loopback adapter has been successfully installed!
+```
+
+The resulting device was confirmed through Windows Plug and Play enumeration as:
+
+```text
+Npcap Loopback Adapter
+Status: Started
+Driver Name: netloop.inf
+```
+
+The Npcap registry configuration also showed loopback support enabled.
 
 ---
 
-# Running Snort
+# Npcap Loopback Capture
 
-After installation, verify the DAQ modules.
+The SCADA test applications communicate locally using TCP over `127.0.0.1`.
 
-Snort should be able to discover the Windows DAQ module:
-
-```text
-daq_pcap.dll
-```
-
-A successful module discovery test produced output equivalent to:
+The observed connection was:
 
 ```text
-Loading modules in:
-<installation-prefix>/lib/daq
-
-Registered daq module: pcap
-Found module daq_pcap.dll
-ret = 0
-module: pcap
+TCP 0.0.0.0:22000       0.0.0.0:0       LISTENING
+TCP 127.0.0.1:6901      127.0.0.1:22000 ESTABLISHED
+TCP 127.0.0.1:22000     127.0.0.1:6901  ESTABLISHED
 ```
 
-This confirms that:
-
-1. The DAQ search path is correct.
-2. The pcap DAQ module is visible.
-3. LibDAQ can load the Windows DLL.
-4. The DAQ module registers successfully.
-
-A direct Windows loader test also confirmed:
+The test applications were identified as:
 
 ```text
-LoadLibrary OK
-DAQ_MODULE_DATA OK
+tmwtest.exe
+PAYA_DNP3.exe
 ```
 
-This verifies that the Windows dynamic loading path can load the DAQ DLL and resolve the expected module data.
+The TMW DNP3 slave configuration used TCP/IP with the local peer at `127.0.0.1` and TCP port `22000`.
+
+This means that the DNP3 communication was not traversing a physical Ethernet interface. It was entirely local loopback traffic.
+
+Npcap exposes this traffic using `DLT_NULL`, whose value is:
+
+```text
+DLT_NULL = 0
+```
+
+This distinction was critical for the Snort integration.
 
 ---
 
-# Live Capture
+# Snort DLT_NULL Codec
 
-After the DAQ module has been installed and Npcap is running, Snort can open an Npcap network interface.
+## Problem
 
-The exact interface identifier depends on the Windows machine and should not be hard-coded in public documentation.
-
-A successful live-capture test demonstrated that:
+The first attempt to capture the Npcap Loopback Adapter reached the DAQ layer successfully but Snort stopped with:
 
 ```text
-Snort
-    |
-    v
-LibDAQ
-    |
-    v
-daq_pcap.dll
-    |
-    v
-Npcap
-    |
-    v
-Live network traffic
+No codec found for data link type 0
+No codec for DAQ base protocol, stopping packet processing
 ```
 
-was functioning correctly.
+This proved that:
+
+1. Npcap was installed correctly.
+2. The loopback adapter was available.
+3. LibDAQ/pcap could open the adapter.
+4. Snort received `DLT_NULL` as the DAQ base protocol.
+5. The missing component was a Snort codec for DLT 0.
+
+The issue was therefore not a network-interface or Npcap installation failure.
+
+## Implementation
+
+A native Snort codec was added at:
+
+```text
+src/codecs/root/cd_null.cc
+```
+
+The codec:
+
+- registers itself as the `null` codec
+- declares support for `DLT_NULL`
+- consumes the 4-byte BSD/Npcap loopback family header
+- recognizes IPv4 (`AF_INET`, family value `2`)
+- recognizes IPv6 (`family value `24` in the Npcap loopback format)
+- forwards the remaining payload to Snort's IPv4/IPv6 processing chain
+
+The core behavior is conceptually:
+
+```text
+DLT_NULL packet
+     |
+     | 4-byte address-family header
+     v
+family == 2   -> IPv4
+family == 24  -> IPv6
+```
+
+The codec was added to the static root codec target in:
+
+```text
+src/codecs/root/CMakeLists.txt
+```
+
+Specifically, `cd_null.cc` was included alongside the existing root codecs.
+
+## Static plugin registration
+
+A second issue appeared after the codec compiled successfully.
+
+Snort's static codec architecture does not automatically discover every object file. The static plugin arrays are explicitly declared and loaded by `src/codecs/codec_api.cc`.
+
+Therefore the following declaration was added:
+
+```cpp
+extern const BaseApi* cd_null[];
+```
+
+and the codec was explicitly loaded with:
+
+```cpp
+PluginManager::load_plugins(cd_null);
+```
+
+Without these two registrations, the codec object existed in the executable but `CodecManager` never instantiated it.
+
+After registration, `CodecManager::thread_init()` could match:
+
+```text
+DAQ DLT = 0
+```
+
+with:
+
+```text
+cd_null -> DLT_NULL
+```
+
+This removed the `No codec found for data link type 0` failure.
+
+## Result
+
+The modified Snort executable was rebuilt successfully:
+
+```bash
+cmake --build build -j4
+```
+
+The loopback capture test then reached active packet processing:
+
+```text
+pcap DAQ configured to passive.
+Commencing packet processing
+Retry queue interval is: 200 ms
+++ [0] \\Device\\NPF_{...}
+```
+
+Most importantly, the previous errors:
+
+```text
+No codec found for data link type 0
+No codec for DAQ base protocol, stopping packet processing
+```
+
+were no longer produced.
+
+This demonstrates that Snort can now initialize its packet-processing path on the Windows Npcap Loopback Adapter.
 
 ---
 
-# Detection Rule Test
+# Running Snort on Windows
 
-A simple ICMP rule was used to validate the complete packet-processing path.
+The pcap DAQ module can be selected explicitly with:
 
-Example rule:
-
-```text
-alert icmp any any -> any any
-(
-    msg:"ICMP ECHO REQUEST";
-    itype:8;
-    sid:1000001;
-    rev:5;
-)
+```bash
+./build/src/snort.exe \
+  --daq-dir /path/to/snort/install/lib/snort/daq \
+  --daq pcap \
+  -i '<Npcap interface name>'
 ```
 
-The rule matches ICMP Echo Request packets.
-
-An ICMP Echo Request was generated from the Windows test host toward the local network gateway.
-
-Snort successfully processed the live packet and generated an alert equivalent to:
+For the Npcap Loopback Adapter, the interface name has the form:
 
 ```text
-[1:1000001:5] "ICMP ECHO REQUEST" {ICMP}
-<test-host> -> <local-gateway>
+\\Device\\NPF_{<interface-guid>}
 ```
 
-The actual IP addresses are intentionally not included in this repository.
+The GUID is machine-specific and should not be committed to documentation.
 
-This test validates the entire path:
+Snort reports the selected DAQ interface with a line similar to:
 
 ```text
-Generated ICMP packet
-        |
-        v
-Windows network stack
-        |
-        v
-Npcap
-        |
-        v
-daq_pcap.dll
-        |
-        v
-LibDAQ
-        |
-        v
-Snort
-        |
-        v
-ICMP detection rule
-        |
-        v
-Alert
+++ [0] \\Device\\NPF_{...}
 ```
 
 ---
 
-# Validation and Testing
+# SCADA/DNP3 Loopback Test
 
-The integration was validated at multiple levels.
+The SCADA laboratory uses a TMW DNP3 test application and a local DNP3 application.
 
-## 1. Snort Version
-
-Verified:
+The observed architecture is:
 
 ```text
-Snort++ 3.12.2.0
+TMW Test Harness
+    tmwtest.exe
+        |
+        | TCP / DNP3
+        | 127.0.0.1:22000
+        v
+PAYA_DNP3.exe
 ```
 
-## 2. LibDAQ Version
+The Windows networking state confirmed an established loopback TCP connection between the applications.
 
-Verified:
+The Snort integration was then extended specifically to support capture of this loopback path.
 
-```text
-DAQ 3.0.27
-```
+### Current validation status
 
-## 3. DAQ Module Discovery
+The following has been confirmed:
 
-Verified that:
+- Npcap Loopback Adapter installed successfully.
+- Snort can open the Npcap Loopback Adapter.
+- LibDAQ pcap starts successfully against the loopback interface.
+- Snort recognizes and processes `DLT_NULL` after the custom codec is registered.
+- The previous DLT 0 codec error is resolved.
 
-```text
-daq_pcap.dll
-```
+The next validation step is to generate DNP3 traffic while Snort is running and confirm that the resulting packets are captured and decoded through the complete inspection path.
 
-was discovered by LibDAQ.
-
-## 4. Windows Dynamic Loading
-
-A direct Windows loader test confirmed:
-
-```text
-LoadLibrary OK
-DAQ_MODULE_DATA OK
-```
-
-## 5. Npcap Capture
-
-Snort successfully opened an Npcap network interface.
-
-## 6. Live Traffic
-
-Snort successfully received live packets through the pcap DAQ module.
-
-## 7. Detection
-
-The ICMP Echo Request rule generated an alert from live traffic.
-
-These tests collectively validate more than compilation alone.
+That final DNP3 live-traffic validation should be recorded separately from the already-confirmed loopback initialization result.
 
 ---
 
 # Validation Results
 
-The final validation demonstrated the following:
-
 | Test | Result |
 |---|---|
-| Snort Windows build | PASS |
-| LibDAQ Windows build | PASS |
-| Snort executable startup | PASS |
-| DAQ module discovery | PASS |
-| `daq_pcap.dll` loading | PASS |
-| Windows `LoadLibrary` test | PASS |
-| Npcap interface access | PASS |
-| Live packet capture | PASS |
-| ICMP detection rule | PASS |
-| Alert generation | PASS |
+| Native Windows build | PASS |
+| Snort 3.12.2.0 executable | PASS |
+| LibDAQ 3.0.27 build | PASS |
+| DAQ pcap module available | PASS |
+| Npcap 1.88 installed | PASS |
+| Npcap driver running | PASS |
+| Npcap Loopback Adapter installed | PASS |
+| Snort opens loopback interface | PASS |
+| DLT_NULL codec compiled | PASS |
+| DLT_NULL codec statically registered | PASS |
+| Snort packet-processing initialization on DLT 0 | PASS |
+| SCADA/DNP3 loopback path identified | PASS |
+| End-to-end DNP3 packet inspection | PENDING |
 
-The most important result is that the system was tested against live traffic rather than only being validated through compilation.
+The distinction between `PASS` and `PENDING` is intentional. A successful interface initialization is not the same as proving that a specific DNP3 packet was captured, decoded, and matched by a Snort rule.
+
+---
+
+# Troubleshooting
+
+## `No codec found for data link type 0`
+
+This error occurs when Snort receives `DLT_NULL` but has no registered codec for it.
+
+For the Windows Npcap Loopback Adapter, verify that:
+
+1. `cd_null.cc` exists under `src/codecs/root/`.
+2. `cd_null.cc` is included in `src/codecs/root/CMakeLists.txt`.
+3. `cd_null[]` is declared in `src/codecs/codec_api.cc`.
+4. `PluginManager::load_plugins(cd_null);` is present in `load_codecs()`.
+5. Snort is rebuilt after the changes.
+
+The required registration path is:
+
+```text
+cd_null.cc
+    |
+    v
+root_codecs
+    |
+    v
+Snort executable
+    |
+    v
+codec_api.cc
+    |
+    v
+PluginManager::load_plugins(cd_null)
+    |
+    v
+CodecManager
+    |
+    v
+DLT_NULL = 0
+```
+
+## `Error opening adapter ... (123)`
+
+Do not use unsupported DAQ variables such as `show_interfaces` with the pcap DAQ. The interface should be passed through Snort's `-i` option using the Npcap interface name.
+
+## Loopback versus Ethernet capture
+
+Do not assume that loopback traffic has an Ethernet header. Npcap loopback capture uses `DLT_NULL`, so an Ethernet codec cannot decode the packet directly.
+
+This is why adding a DLT_NULL codec was necessary for the local SCADA topology.
 
 ---
 
 # Current Limitations
 
-This project should be considered Windows platform support and integration work rather than a claim of complete feature parity between Windows and every Unix-like Snort environment.
+This project should be considered Windows integration and portability work rather than a claim of complete Windows feature parity with every Unix-like Snort deployment.
 
-Some Snort functionality is inherently platform-specific.
+The current SCADA validation also has an explicit boundary: loopback capture initialization has been verified, but complete DNP3 packet detection still requires a live traffic test with the TMW/PAYA applications active.
 
-The Windows build therefore excludes or adapts components that depend on Unix-only functionality, including areas such as:
+Some functionality remains inherently platform-specific, including Unix-domain sockets, Unix-only transports, Unix socket logging, and other POSIX-dependent components.
 
-- Unix-domain socket functionality
-- Unix-only transports
-- Unix socket logging
-- POSIX-specific APIs
-- Unix-specific RPC functionality
-- POSIX filesystem matching APIs
-
-The purpose of these changes is to make the core Snort build and DAQ packet-capture path functional on Windows without unnecessarily changing the existing non-Windows implementation.
-
-Additional testing is required before claiming complete Windows feature parity.
+The DLT_NULL codec currently targets the BSD/Npcap loopback format used by the tested Windows environment. It should not be treated as a universal replacement for every possible loopback data-link format without additional validation.
 
 ---
 
 # Upstream Status
 
-The Windows changes are maintained in separate upstream pull requests.
-
 ## Snort
 
-PR:
+Pull Request #478:
 
 https://github.com/snort3/snort3/pull/478
 
 Status:
 
 ```text
-Open
-Not merged
+Open / not merged
 ```
 
-Commit:
+Branch:
 
 ```text
-e976668958270f82e45b834e601ae28d868b7c31
+Mahbodbe:windows-support
 ```
 
 ## LibDAQ
 
-PR:
+Pull Request #43:
 
 https://github.com/snort3/libdaq/pull/43
 
 Status:
 
 ```text
-Open
-Not merged
+Open / not merged
 ```
 
-Commit:
+Branch:
 
 ```text
-c97c07e8207898c8292eef0db129788d5335df67
+Mahbodbe:windows-support
 ```
 
-Until upstream maintainers merge these changes, this integration repository references the corresponding fork branches.
+The DLT_NULL loopback codec described in this README is an additional integration change made in the local Snort source tree for the Windows/Npcap loopback SCADA test path.
 
-The integration repository should therefore be understood as a working Windows integration based on the submitted changes, not as an assertion that the changes are already part of upstream releases.
+It should therefore be kept conceptually separate from the broader Windows-support pull request until it is independently reviewed and, if appropriate, proposed upstream.
 
 ---
 
-# AI-Assisted Development and Review
+# AI-Assisted Development
 
-Parts of the development, debugging, portability analysis, build troubleshooting, documentation, and code review process were performed with assistance from AI tools.
+Parts of the development and debugging process were performed with assistance from AI tools.
 
-AI assistance was used as a development aid, including:
+AI assistance was used for tasks including:
 
-- identifying likely POSIX-to-Windows incompatibilities
-- analyzing compiler and linker errors
-- suggesting platform-specific API mappings
-- reviewing conditional compilation
-- investigating build-system behavior
-- checking dynamic-module loading logic
-- helping structure the integration repository
-- reviewing documentation and reproducibility steps
+- analyzing Windows/POSIX portability issues
+- interpreting compiler and linker errors
+- investigating DAQ behavior
+- tracing Snort's codec registration architecture
+- diagnosing the Npcap loopback `DLT_NULL` failure
+- designing and reviewing the DLT_NULL codec
+- checking CMake/static-plugin integration
+- documenting the reproducible build and validation process
 
-The resulting code was not accepted solely on the basis of AI-generated suggestions.
-
-The implementation was manually inspected, built, tested, and reviewed in the target Windows environment.
-
-The validation included actual execution of Snort, DAQ module discovery, dynamic DLL loading, Npcap live capture, and a live ICMP detection test.
-
-Therefore, AI assistance was part of the development workflow, while the final implementation and test results were reviewed and validated in the target environment.
+The resulting changes were manually inspected, compiled, and tested in the target Windows environment. AI assistance was therefore a development aid rather than the sole basis for accepting the implementation.
 
 ---
 
 # Reproducibility
 
-The integration is designed so that another developer can reproduce the environment without relying on the original machine.
+The repository avoids publishing machine-specific information such as:
 
-The repository avoids publishing:
-
-- local IP addresses
-- gateway addresses
-- network-interface GUIDs
+- private IP addresses
+- interface GUIDs
 - Windows usernames
 - personal filesystem paths
-- machine-specific configuration
 
-Instead, the documentation uses placeholders such as:
-
-```text
-/path/to/snort3-windows
-```
-
-and:
+Use placeholders such as:
 
 ```text
-<test-host>
-<local-gateway>
+<installation-prefix>
+<Npcap interface name>
+<interface-guid>
 ```
 
-The exact software revisions are explicitly documented:
+The important software revisions are explicitly documented:
 
 ```text
 Snort 3.12.2.0
-Commit: e976668958270f82e45b834e601ae28d868b7c31
-
 LibDAQ 3.0.27
-Commit: c97c07e8207898c8292eef0db129788d5335df67
-
 Npcap 1.88
+GCC 16.2.0
+MSYS2 UCRT64
 ```
 
-This makes the project reproducible without exposing details of the original test network.
+The repository is intended to allow another Windows system to reproduce the build and then adapt the interface name and paths to its own environment.
 
 ---
 
 # License
 
-This integration repository contains references to and submodules from the upstream Snort and LibDAQ projects.
+This repository contains references to and submodules from the upstream Snort and LibDAQ projects. Their respective licenses apply to their source code.
 
-The licensing terms of those projects apply to their respective source code.
-
-Refer to the upstream repositories for the authoritative license information:
+See the upstream repositories for authoritative licensing information:
 
 - Snort 3: https://github.com/snort3/snort3
 - LibDAQ: https://github.com/snort3/libdaq
 
-Any additional scripts or documentation introduced specifically by this integration repository should be considered under the license selected for those files by the repository maintainers.
-
----
-
-# Conclusion
-
-This repository demonstrates a working Windows integration of Snort 3, LibDAQ, and Npcap.
-
-The work is divided into two independent portability changes:
-
-```text
-Snort Windows Support
-        +
-LibDAQ Windows Support
-        +
-Npcap
-        |
-        v
-Snort 3 running on Windows
-```
-
-The Snort changes address the broader set of Windows compatibility issues throughout the Snort source tree.
-
-The LibDAQ changes provide the Windows dynamic-library loading required to discover and load DAQ modules such as:
-
-```text
-daq_pcap.dll
-```
-
-The complete integration was built and tested on Windows 10 Enterprise 64-bit using MSYS2 UCRT64 and Npcap.
-
-The final validation confirmed:
-
-- successful Snort compilation
-- successful LibDAQ compilation
-- successful Windows DAQ module loading
-- successful Npcap interface access
-- successful live packet capture
-- successful ICMP rule processing
-- successful alert generation
-
-The corresponding Windows-support changes have also been submitted as separate upstream pull requests so that the work can be reviewed independently by the respective maintainers.
+Additional scripts and documentation introduced by this repository are subject to the repository's chosen licensing terms.
 
 ---
 
 # References
 
-- Snort 3:
-  https://github.com/snort3/snort3
-
-- LibDAQ:
-  https://github.com/snort3/libdaq
-
-- Snort Windows Support PR #478:
-  https://github.com/snort3/snort3/pull/478
-
-- LibDAQ Windows Support PR #43:
-  https://github.com/snort3/libdaq/pull/43
-
-- Integration Repository:
-  https://github.com/Mahbodbe/snort3-windows
-
-- Npcap:
-  https://npcap.com/
-
+- Snort 3: https://github.com/snort3/snort3
+- LibDAQ: https://github.com/snort3/libdaq
+- Snort Windows Support PR #478: https://github.com/snort3/snort3/pull/478
+- LibDAQ Windows Support PR #43: https://github.com/snort3/libdaq/pull/43
+- Integration repository: https://github.com/Mahbodbe/snort3-windows
+- Npcap: https://npcap.com/
